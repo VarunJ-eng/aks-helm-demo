@@ -1,0 +1,82 @@
+name: Deploy Nginx to AKS
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - 'nginx-demo/**'
+      - '.github/workflows/deploy.yml'
+
+  workflow_dispatch:
+
+permissions:
+  id-token: write
+  contents: read
+
+env:
+  RESOURCE_GROUP: rg-aks-demo
+  AKS_CLUSTER: aks-demo-cluster
+  NAMESPACE: demo
+  RELEASE_NAME: nginx-demo
+  CHART_PATH: ./nginx-demo
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Helm
+        uses: azure/setup-helm@v4
+
+      - name: Validate Helm chart
+        run: |
+          helm version
+          helm lint "$CHART_PATH"
+          helm template "$RELEASE_NAME" "$CHART_PATH"
+
+      - name: Azure Login
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Set up kubectl
+        uses: azure/setup-kubectl@v4
+
+      - name: Set up AKS credentials
+        run: |
+          az aks get-credentials \
+            --resource-group "$RESOURCE_GROUP" \
+            --name "$AKS_CLUSTER" \
+            --overwrite-existing
+
+      - name: Install kubelogin
+        run: |
+          az aks install-cli
+
+      - name: Deploy Nginx using Helm
+        run: |
+          kubelogin convert-kubeconfig -l azurecli
+
+          kubectl get namespace "$NAMESPACE" || \
+            kubectl create namespace "$NAMESPACE"
+
+          helm upgrade --install "$RELEASE_NAME" "$CHART_PATH" \
+            --namespace "$NAMESPACE" \
+            --wait \
+            --timeout 5m
+
+      - name: Verify deployment
+        run: |
+          kubectl rollout status deployment/"$RELEASE_NAME" \
+            -n "$NAMESPACE" \
+            --timeout=180s
+
+          kubectl get pods -n "$NAMESPACE"
+          kubectl get svc -n "$NAMESPACE"
+          helm list -n "$NAMESPACE"
